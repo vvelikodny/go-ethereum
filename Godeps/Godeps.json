@@ -125,6 +125,10 @@
 		{
 			"ImportPath": "gopkg.in/karalabe/cookiejar.v2/collections/prque",
 			"Rev": "8dcd6a7f4951f6ff3ee9cbb919a06d8925822e57"
+		},
+		{
+			"ImportPath": "github.com/franela/goreq",
+			"Rev": "3ddeded65be21dacb5a2e2d0b95af9ff6862a2b5"
 		}
 	]
 }

@@ -33,6 +33,7 @@ import (
 	"github.com/ethereum/go-ethereum/logger/glog"
 	"github.com/ethereum/go-ethereum/rpc/codec"
 	"github.com/ethereum/go-ethereum/rpc/shared"
+	"github.com/franela/goreq"
 	"github.com/rs/cors"
 )
 
@@ -40,17 +41,28 @@ const (
 	serverIdleTimeout  = 10 * time.Second // idle keep-alive connections
 	serverReadTimeout  = 15 * time.Second // per-request read timeout
 	serverWriteTimeout = 15 * time.Second // per-request read timeout
+
+	RPC_COMMAND_LIGHT_MODE = "light_mode"
+	RPC_COMMAND_FULL_MODE  = "full_mode"
+
+	LIGHT_MODE = true
+	FULL_MODE  = false
 )
 
 var (
 	httpServerMu sync.Mutex
 	httpServer   *stopServer
+
+	lightMu   sync.Mutex
+	lightMode bool
 )
 
 type HttpConfig struct {
 	ListenAddress string
 	ListenPort    uint
 	CorsDomain    string
+	ProxyAddress  string
+	ProxyDebug    bool
 }
 
 // stopServer augments http.Server with idle connection tracking.
@@ -65,6 +77,7 @@ type stopServer struct {
 }
 
 type handler struct {
+	cfg   HttpConfig
 	codec codec.Codec
 	api   shared.EthereumApi
 }
@@ -82,7 +95,7 @@ func StartHttp(cfg HttpConfig, codec codec.Codec, api shared.EthereumApi) error 
 		return nil // RPC service already running on given host/port
 	}
 	// Set up the request handler, wrapping it with CORS headers if configured.
-	handler := http.Handler(&handler{codec, api})
+	handler := http.Handler(&handler{cfg, codec, api})
 	if len(cfg.CorsDomain) > 0 {
 		opts := cors.Options{
 			AllowedMethods: []string{"POST"},
@@ -123,6 +136,32 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	c := h.codec.New(nil)
 	var rpcReq shared.Request
 	if err = c.Decode(payload, &rpcReq); err == nil {
+		if rpcReq.Method == RPC_COMMAND_LIGHT_MODE {
+			if len(h.cfg.ProxyAddress) <= 0 {
+				err = fmt.Errorf("Proxy host not configured!")
+				res := shared.NewRpcErrorResponse(-1, shared.JsonRpcVersion, -32600, err)
+				sendJSON(w, &res)
+				return
+			}
+
+			switchLightMode(LIGHT_MODE)
+			res := shared.NewRpcResponse(rpcReq.Id, rpcReq.Jsonrpc, "Switched to light mode", err)
+			sendJSON(w, &res)
+			return
+		}
+
+		if rpcReq.Method == RPC_COMMAND_FULL_MODE {
+			switchLightMode(FULL_MODE)
+			res := shared.NewRpcResponse(rpcReq.Id, rpcReq.Jsonrpc, "Switched to full mode", err)
+			sendJSON(w, &res)
+			return
+		}
+
+		if lightMode {
+			proxyRequest(h.cfg, payload, w, req)
+			return
+		}
+
 		reply, err := h.api.Execute(&rpcReq)
 		res := shared.NewRpcResponse(rpcReq.Id, rpcReq.Jsonrpc, reply, err)
 		sendJSON(w, &res)
@@ -342,4 +381,55 @@ func (self *httpClient) SupportedModules() (map[string]string, error) {
 	}
 
 	return nil, err
+}
+
+func switchLightMode(enabled bool) {
+	lightMu.Lock()
+	lightMode = enabled
+	lightMu.Unlock()
+}
+
+func proxyRequest(cfg HttpConfig, payload []byte, w http.ResponseWriter, req *http.Request) {
+	request := goreq.Request{
+		ShowDebug: cfg.ProxyDebug,
+		Method:    req.Method,
+		Proxy:     cfg.ProxyAddress,
+		Uri:       cfg.ProxyAddress,
+		Insecure:  true,
+		Timeout:   time.Duration(time.Second*5) * time.Second,
+		Body:      payload,
+	}
+
+	for key, values := range req.Header {
+		for _, value := range values {
+			request.AddHeader(key, value)
+		}
+	}
+
+	result, err := request.Do()
+	if err != nil {
+		response := shared.NewRpcErrorResponse(-1, shared.JsonRpcVersion, -32900, err)
+		sendJSON(w, &response)
+		return
+	}
+
+	for key := range w.Header() {
+		w.Header().Del(key)
+	}
+
+	for key, values := range result.Header {
+		// Omit content-length since it will be given automatically
+		if key == "Content-Length" {
+			continue
+		}
+
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
+	}
+
+	defer result.Body.Close()
+
+	w.WriteHeader(result.StatusCode)
+	io.Copy(w, result.Body)
 }

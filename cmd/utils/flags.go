@@ -270,6 +270,11 @@ var (
 		Usage: "HTTP-RPC server listening port",
 		Value: 8545,
 	}
+	RPCProxyFlag = cli.StringFlag{
+		Name:  "rpcproxy",
+		Usage: "HTTP-RPC proxy address",
+		Value: "",
+	}
 	RPCCORSDomainFlag = cli.StringFlag{
 		Name:  "rpccorsdomain",
 		Usage: "Domains from which to accept cross origin requests (browser enforced)",
@@ -628,6 +633,8 @@ func StartRPC(eth *eth.Ethereum, ctx *cli.Context) error {
 		ListenAddress: ctx.GlobalString(RPCListenAddrFlag.Name),
 		ListenPort:    uint(ctx.GlobalInt(RPCPortFlag.Name)),
 		CorsDomain:    ctx.GlobalString(RPCCORSDomainFlag.Name),
+		ProxyAddress:  ctx.GlobalString(RPCProxyFlag.Name),
+		ProxyDebug:    ctx.GlobalBool(DevModeFlag.Name),
 	}
 
 	xeth := xeth.New(eth, nil)
