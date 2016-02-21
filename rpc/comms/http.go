@@ -46,7 +46,6 @@ const (
 	RPC_COMMAND_FULL_MODE  = "full_mode"
 
 	LIGHT_MODE = true
-	FULL_MODE  = false
 )
 
 var (
@@ -151,7 +150,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 
 		if rpcReq.Method == RPC_COMMAND_FULL_MODE {
-			switchLightMode(FULL_MODE)
+			switchLightMode(!LIGHT_MODE)
 			res := shared.NewRpcResponse(rpcReq.Id, rpcReq.Jsonrpc, "Switched to full mode", err)
 			sendJSON(w, &res)
 			return
