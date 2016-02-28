@@ -108,6 +108,8 @@ type Config struct {
 	// for ephemeral nodes).
 	HTTPPort int
 
+	HTTPProxy string
+
 	// HTTPCors is the Cross-Origin Resource Sharing header to send to requesting
 	// clients. Please be aware that CORS is a browser enforced security, it's fully
 	// useless for custom HTTP clients.

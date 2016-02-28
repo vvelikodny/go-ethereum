@@ -95,3 +95,16 @@ func (e *shutdownError) Code() int {
 func (e *shutdownError) Error() string {
 	return "server is shutting down"
 }
+
+// issued when a request is received after the server is issued to stop.
+type proxyError struct {
+	err error
+}
+
+func (e *proxyError) Code() int {
+	return -32000
+}
+
+func (e *proxyError) Error() string {
+	return fmt.Sprintf("proxy error: %s", e.err.Error())
+}

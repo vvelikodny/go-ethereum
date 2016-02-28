@@ -29,7 +29,7 @@ func NewInProcRPCClient(handler *Server) Client {
 		server: handler,
 		buffer: buffer,
 	}
-	go handler.ServeCodec(NewJSONCodec(client.buffer))
+	go handler.ServeCodec("", NewJSONCodec(client.buffer))
 	return client
 }
 

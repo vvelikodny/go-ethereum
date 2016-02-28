@@ -23,18 +23,37 @@ import (
 	"sync/atomic"
 	"time"
 
+	"encoding/json"
+	"errors"
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/logger"
 	"github.com/ethereum/go-ethereum/logger/glog"
+	"github.com/franela/goreq"
 	"golang.org/x/net/context"
 	"gopkg.in/fatih/set.v0"
+	"log"
+	"sync"
 )
+
+type RPCMode int
 
 const (
 	stopPendingRequestTimeout = 3 * time.Second // give pending requests stopPendingRequestTimeout the time to finish when the server is stopped
 
 	DefaultIPCApis  = "admin,eth,debug,miner,net,shh,txpool,personal,web3"
 	DefaultHTTPApis = "eth,net,web3"
+
+	RPC_TOOGLE_MODE_METHOD = "toggleMode"
+)
+
+const (
+	RPC_MODE_LIGHT RPCMode = iota
+	RPC_MODE_PROXY
+	RPC_MODE_FULL
+)
+
+var (
+	lightMu sync.Mutex
 )
 
 // NewServer will create a new server instance with no registered handlers.
@@ -44,6 +63,7 @@ func NewServer() *Server {
 		subscriptions: make(subscriptionRegistry),
 		codecs:        set.New(),
 		run:           1,
+		rpcMode:       RPC_MODE_FULL,
 	}
 
 	// register a default service which will provide meta information about the RPC service such as the services and
@@ -124,7 +144,7 @@ func (s *Server) RegisterName(name string, rcvr interface{}) error {
 // 1. allow for asynchronous and parallel request execution
 // 2. supports notifications (pub/sub)
 // 3. supports request batches
-func (s *Server) ServeCodec(codec ServerCodec) {
+func (s *Server) ServeCodec(proxyAddress string, codec ServerCodec) {
 	defer func() {
 		if err := recover(); err != nil {
 			const size = 64 << 10
@@ -148,11 +168,42 @@ func (s *Server) ServeCodec(codec ServerCodec) {
 
 	for atomic.LoadInt32(&s.run) == 1 {
 		reqs, batch, err := s.readRequest(codec)
-
 		if err != nil {
 			glog.V(logger.Debug).Infof("%v\n", err)
 			codec.Write(codec.CreateErrorResponse(nil, err))
 			break
+		}
+
+		log.Printf("%+v", reqs[0])
+
+		request := reqs[0].orig
+
+		if !batch {
+			if request.method == RPC_TOOGLE_MODE_METHOD {
+				params := make([]int, 1)
+				data := request.params.(json.RawMessage)
+				bts, _ := data.MarshalJSON()
+				errs := json.Unmarshal(bts, &params)
+				if errs != nil || len(params) == 0 {
+					codec.Write(codec.CreateErrorResponse(nil, &invalidParamsError{"Invalid mode value"}))
+					break
+				}
+
+				mode := RPCMode(params[0])
+				if mode < RPC_MODE_LIGHT || mode > RPC_MODE_FULL {
+					codec.Write(codec.CreateErrorResponse(nil, &invalidParamsError{"Invalid mode value"}))
+					break
+				}
+
+				if mode == RPC_MODE_LIGHT {
+					codec.Write(codec.CreateErrorResponse(nil, &proxyError{errors.New("Light mode not implemented!")}))
+					break
+				}
+
+				s.switchLightMode(mode)
+				codec.Write(codec.CreateResponse(request.id, fmt.Sprintf("switched to %d", mode)))
+				break
+			}
 		}
 
 		if atomic.LoadInt32(&s.run) != 1 {
@@ -169,11 +220,63 @@ func (s *Server) ServeCodec(codec ServerCodec) {
 			break
 		}
 
+		if s.rpcMode == RPC_MODE_PROXY {
+			go s.proxyRequest(codec, proxyAddress, request)
+			continue
+		}
+
 		if batch {
 			go s.execBatch(ctx, codec, reqs)
 		} else {
 			go s.exec(ctx, codec, reqs[0])
 		}
+	}
+}
+
+func (s *Server) switchLightMode(mode RPCMode) {
+	lightMu.Lock()
+	s.rpcMode = mode
+	lightMu.Unlock()
+}
+
+func (s *Server) proxyRequest(codec ServerCodec, proxyAddress string, r rpcRequest) {
+	b, err := json.Marshal(&JSONRequest{
+		Id:      &r.id,
+		Method:  fmt.Sprintf("%s_%s", r.service, r.method),
+		Version: "2.0",
+		Payload: r.params.(json.RawMessage),
+	})
+	if err != nil {
+		codec.Write(codec.CreateErrorResponse(&r.id, &proxyError{err}))
+		return
+	}
+
+	request := goreq.Request{
+		ShowDebug: true,
+		Method:    "POST",
+		Uri:       proxyAddress,
+		Timeout:   time.Duration(time.Second * 5),
+		Body:      string(b),
+	}
+
+	response, err := request.Do()
+	if err != nil {
+		codec.Write(codec.CreateErrorResponse(&r.id, &proxyError{err}))
+		return
+	}
+
+	var result interface{}
+	err = json.NewDecoder(response.Body).Decode(&result)
+	defer response.Body.Close()
+	if err != nil {
+		codec.Write(codec.CreateErrorResponse(&r.id, &proxyError{err}))
+		return
+	}
+
+	log.Printf("res: %+v", result)
+
+	if err := codec.Write(result); err != nil {
+		codec.Close()
 	}
 }
 
@@ -383,6 +486,11 @@ func (s *Server) readRequest(codec ServerCodec) ([]*serverRequest, bool, RPCErro
 		var ok bool
 		var svc *service
 
+		if r.method == RPC_TOOGLE_MODE_METHOD {
+			requests[i] = &serverRequest{id: r.id, orig: r}
+			continue
+		}
+
 		if r.isPubSub && r.method == unsubscribeMethod {
 			requests[i] = &serverRequest{id: r.id, isUnsubscribe: true}
 			argTypes := []reflect.Type{reflect.TypeOf("")}
@@ -401,7 +509,7 @@ func (s *Server) readRequest(codec ServerCodec) ([]*serverRequest, bool, RPCErro
 
 		if r.isPubSub { // eth_subscribe
 			if callb, ok := svc.subscriptions[r.method]; ok {
-				requests[i] = &serverRequest{id: r.id, svcname: svc.name, callb: callb}
+				requests[i] = &serverRequest{id: r.id, svcname: svc.name, callb: callb, orig: r}
 				if r.params != nil && len(callb.argTypes) > 0 {
 					argTypes := []reflect.Type{reflect.TypeOf("")}
 					argTypes = append(argTypes, callb.argTypes...)
@@ -418,7 +526,7 @@ func (s *Server) readRequest(codec ServerCodec) ([]*serverRequest, bool, RPCErro
 		}
 
 		if callb, ok := svc.callbacks[r.method]; ok {
-			requests[i] = &serverRequest{id: r.id, svcname: svc.name, callb: callb}
+			requests[i] = &serverRequest{id: r.id, svcname: svc.name, callb: callb, orig: r}
 			if r.params != nil && len(callb.argTypes) > 0 {
 				if args, err := codec.ParseRequestArguments(callb.argTypes, r.params); err == nil {
 					requests[i].args = args

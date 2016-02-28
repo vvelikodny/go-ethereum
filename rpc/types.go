@@ -64,6 +64,7 @@ type serverRequest struct {
 	args          []reflect.Value
 	isUnsubscribe bool
 	err           RPCError
+	orig          rpcRequest
 }
 
 type serviceRegistry map[string]*service          // collection of services
@@ -80,6 +81,8 @@ type Server struct {
 	run      int32
 	codecsMu sync.Mutex
 	codecs   *set.Set
+
+	rpcMode RPCMode
 }
 
 // rpcRequest represents a raw incoming RPC request

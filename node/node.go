@@ -63,6 +63,7 @@ type Node struct {
 	ipcHandler  *rpc.Server  // IPC RPC request handler to process the API requests
 
 	httpEndpoint  string       // HTTP endpoint (interface + port) to listen at (empty = HTTP disabled)
+	httpProxy     string       // HTTP proxy (interface + port) to listen at (empty = HTTP proxy disabled)
 	httpWhitelist []string     // HTTP RPC modules to allow through this endpoint
 	httpCors      string       // HTTP RPC Cross-Origin Resource Sharing header
 	httpListener  net.Listener // HTTP RPC listener socket to server API requests
@@ -111,6 +112,7 @@ func New(conf *Config) (*Node, error) {
 		serviceFuncs:  []ServiceConstructor{},
 		ipcEndpoint:   conf.IPCEndpoint(),
 		httpEndpoint:  conf.HTTPEndpoint(),
+		httpProxy:     conf.HTTPProxy,
 		httpWhitelist: conf.HTTPModules,
 		httpCors:      conf.HTTPCors,
 		wsEndpoint:    conf.WSEndpoint(),
@@ -303,7 +305,7 @@ func (n *Node) startIPC(apis []rpc.API) error {
 				glog.V(logger.Error).Infof("IPC accept failed: %v", err)
 				continue
 			}
-			go handler.ServeCodec(rpc.NewJSONCodec(conn))
+			go handler.ServeCodec("", rpc.NewJSONCodec(conn))
 		}
 	}()
 	// All listeners booted successfully
@@ -356,7 +358,7 @@ func (n *Node) startHTTP(endpoint string, apis []rpc.API, modules []string, cors
 	if listener, err = net.Listen("tcp", endpoint); err != nil {
 		return err
 	}
-	go rpc.NewHTTPServer(cors, handler).Serve(listener)
+	go rpc.NewHTTPServer(n.httpProxy, cors, handler).Serve(listener)
 	glog.V(logger.Info).Infof("HTTP endpoint opened: http://%s", endpoint)
 
 	// All listeners booted successfully

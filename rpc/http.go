@@ -17,6 +17,8 @@
 package rpc
 
 import (
+	"gopkg.in/fatih/set.v0"
+
 	"bufio"
 	"bytes"
 	"encoding/json"
@@ -32,7 +34,6 @@ import (
 
 	"github.com/ethereum/go-ethereum/logger"
 	"github.com/ethereum/go-ethereum/logger/glog"
-	"gopkg.in/fatih/set.v0"
 )
 
 const (
@@ -216,8 +217,9 @@ func httpTimestamp(t time.Time) []byte {
 // connection,  wraps it in a HttpMessageStream that is then wrapped in a JSON
 // codec which will be served on the rpcServer.
 type httpConnHijacker struct {
-	corsdomains []string
-	rpcServer   *Server
+	corsdomains  []string
+	rpcServer    *Server
+	proxyAddress string
 }
 
 // ServeHTTP will hijack the connection, wraps the captured connection in a
@@ -238,15 +240,17 @@ func (h *httpConnHijacker) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	httpRequestStream := NewHTTPMessageStream(conn, rwbuf, req, h.corsdomains)
 
 	codec := NewJSONCodec(httpRequestStream)
-	go h.rpcServer.ServeCodec(codec)
+
+	go h.rpcServer.ServeCodec(h.proxyAddress, codec)
 }
 
 // NewHTTPServer creates a new HTTP RPC server around an API provider.
-func NewHTTPServer(cors string, handler *Server) *http.Server {
+func NewHTTPServer(proxy string, cors string, handler *Server) *http.Server {
 	return &http.Server{
 		Handler: &httpConnHijacker{
-			corsdomains: strings.Split(cors, ","),
-			rpcServer:   handler,
+			corsdomains:  strings.Split(cors, ","),
+			rpcServer:    handler,
+			proxyAddress: proxy,
 		},
 	}
 }

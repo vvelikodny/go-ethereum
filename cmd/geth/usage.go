@@ -88,6 +88,7 @@ var AppHelpFlagGroups = []flagGroup{
 			utils.RPCEnabledFlag,
 			utils.RPCListenAddrFlag,
 			utils.RPCPortFlag,
+			utils.RPCProxyFlag,
 			utils.RPCApiFlag,
 			utils.WSEnabledFlag,
 			utils.WSListenAddrFlag,
